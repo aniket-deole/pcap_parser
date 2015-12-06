@@ -9,7 +9,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
+#include <ctype.h>
+#include <unistd.h>
 /*
  * Resources: 
  * http://www.tcpdump.org/pcap.html
@@ -89,7 +90,23 @@ struct sniff_tcp {
 char errbuf[PCAP_ERRBUF_SIZE];
 
 #define ACK_SOURCE_PORT 26556
+#define START_PACKET 4200
+#define END_PACKET 41000
 
+int part_6_start_indices[10] = { 4223, 7387, 10081, 12761, 17263, 20656, 25665, 30134, 
+  35267, 39977 };
+int part_6_valid_count_choices[9] = {
+  10,
+  25,
+  50,
+  75,
+  100,
+  125,
+  150,
+  175,
+  200,
+};
+int part_6_valid_count_choices_count = 9;
 struct pkt_node {
   struct pcap_pkthdr* pn_pkt_hdr;
   char* pn_data;
@@ -97,11 +114,14 @@ struct pkt_node {
   struct sniff_ip* pn_ip_hdr;
   struct sniff_tcp* pn_tcp_hdr;
   struct pkt_node* next;
+  int index;
 };
 
 struct pkt_node* pkt_list_head;
 struct pkt_node* pkt_list_tail;
-
+struct pkt_node* pkt_list_head_ten_sec;
+struct pkt_node* plh;
+int plh_i = 0;
 void resolve_network_hdrs (struct pkt_node* node) {
   node->pn_ethernet_hdr = malloc (sizeof (struct sniff_ethernet));
   memcpy (node->pn_ethernet_hdr, node->pn_data, sizeof (struct sniff_ethernet));
@@ -114,15 +134,17 @@ void resolve_network_hdrs (struct pkt_node* node) {
   return;
 }
 
-void add_to_packet_list (struct pcap_pkthdr* pkt_hdr_p, char* data_p) {
+void add_to_packet_list (struct pcap_pkthdr* pkt_hdr_p, char* data_p, int i) {
   if (pkt_list_head == NULL) {
     pkt_list_head = malloc (sizeof (struct pkt_node));
+    pkt_list_head->index = i;
     pkt_list_head->pn_pkt_hdr = pkt_hdr_p;
     pkt_list_head->pn_data = data_p;
     pkt_list_head->next = NULL;
     pkt_list_tail = pkt_list_head;
   } else {
     struct pkt_node* node = malloc (sizeof (struct pkt_node));
+    node->index = i;
     node->pn_pkt_hdr = pkt_hdr_p;
     node->pn_pkt_hdr = malloc (sizeof (struct pcap_pkthdr));
     memcpy (node->pn_pkt_hdr, pkt_hdr_p, sizeof (struct pcap_pkthdr));
@@ -138,25 +160,34 @@ void add_to_packet_list (struct pcap_pkthdr* pkt_hdr_p, char* data_p) {
 
 struct pkt_node* get_nth_packet (int n) {
   int i = 0;
-  struct pkt_node* node = pkt_list_head;
-  while ( i < 4200) {
-    node = node->next;
-    i++;
-  }
-  i = 0;
-  while ( i < n) {
-    if ((ntohs (node->pn_tcp_hdr->th_sport)) != ACK_SOURCE_PORT) {
+  struct pkt_node* node;
+  if (plh == NULL) {
+    node = pkt_list_head;
+    if ( pkt_list_head_ten_sec == NULL) {
+      while ( i < START_PACKET) {
+        node = node->next;
+        i++;
+      }
+      pkt_list_head_ten_sec = node;
+    }
+    i = 0;
+    while ( i < n) {
+      if ((ntohs (node->pn_tcp_hdr->th_sport)) != ACK_SOURCE_PORT) {
+        node = node->next;
+        i++;
+        continue;
+      }
       node = node->next;
       i++;
-      continue;
+      if (node == NULL)
+        return NULL;
     }
-    node = node->next;
-    i++;
     if (node == NULL)
       return NULL;
+    plh_i = n;
+  } else {
+    node = plh;
   }
-  if (node == NULL)
-    return NULL;
   while (ntohs (node->pn_tcp_hdr->th_sport) != ACK_SOURCE_PORT) {
     node = node->next;
     if (node == NULL)
@@ -165,17 +196,46 @@ struct pkt_node* get_nth_packet (int n) {
   return node;
 }
 
+int get_start_index_g_for_ack (int n) {
+  struct pkt_node* data_packet = pkt_list_head->next;
+  while (1) {
+    if (data_packet->index >= n) {
+     if ((ntohs (data_packet->pn_tcp_hdr->th_sport)) == ACK_SOURCE_PORT) {
+        data_packet = data_packet->next;
+        continue;
+     }
+       break;
+    }
+    data_packet = data_packet->next;
+  }
+  tcp_seq seq_number = ntohl (data_packet->pn_tcp_hdr->th_seq);
+  struct pkt_node* node = data_packet;
+  
+  while (1) {
+    if ((ntohs (node->pn_tcp_hdr->th_sport)) == ACK_SOURCE_PORT) {
+     tcp_seq ack = ntohl (node->pn_tcp_hdr->th_ack);
+     if (ack >= seq_number)
+       break;
+    }
+    if (node->next == NULL)
+      break;
+    node = node->next;
+  }
+  tcp_seq final_ack_number = ntohl (node->pn_tcp_hdr->th_ack);
+  
+  printf ("For Data Node: %d, Ack Node is %d\n", data_packet->index, node->index);
+  
+  return node->index;
+}
+
+
+
+
 float get_t4_minus_t0 (int start_index, int end) {
   struct pkt_node* ack = get_nth_packet (start_index);
   tcp_seq ack_number = ntohl (ack->pn_tcp_hdr->th_ack);
-  struct pkt_node* node = pkt_list_head;
-  int i = 0;
-  while (i < 4200) {
-    node = node->next;
-    i++;
-  }
-  i = 0;
-
+  struct pkt_node* node = get_nth_packet (start_index - 500);
+  
   struct pkt_node* prev_data_node;
   while (1) {
     if ((ntohs (node->pn_tcp_hdr->th_sport)) != ACK_SOURCE_PORT) {
@@ -194,15 +254,8 @@ float get_t4_minus_t0 (int start_index, int end) {
 
   ack = get_nth_packet (end);
   ack_number = ntohl (ack->pn_tcp_hdr->th_ack);
-  node = pkt_list_head;
-
-  i = 0;
-  while (i < 4200) {
-    node = node->next;
-    i++;
-  }
-  i = 0;
- 
+  node = get_nth_packet (end - 500);
+  
   prev_data_node = NULL;
   while (1) {
     if ((ntohs (node->pn_tcp_hdr->th_sport)) != ACK_SOURCE_PORT) {
@@ -229,7 +282,7 @@ int construct_pkt_list (char* filter) {
     return -1;
   }
 
-  char filter_exp[] = "tcp and ip host 66.87.136.117";
+  char filter_exp[] = "tcp and ip host 66.87.136.117"; 
   struct bpf_program fp;
 
   if (!strcmp (filter, "NULL")) {
@@ -250,7 +303,7 @@ int construct_pkt_list (char* filter) {
   const u_char* data_p;
   int i = 0;
   while (pcap_next_ex (dump_file, &pkt_hdr_p, &data_p) == 1) {
-    add_to_packet_list (pkt_hdr_p, (u_char*) data_p);
+    add_to_packet_list (pkt_hdr_p, (u_char*) data_p, i);
     i++;
   }
   fprintf (stdout, "Total TCP Packets: %d\n", i);
@@ -286,13 +339,16 @@ timeval_subtract (result, x, y)
   return x->tv_sec < y->tv_sec;
 }
 
-int filter_based_on_time_milliseconds (int start_index, float milliseconds, struct timeval* returnValue) {
+int filter_based_on_time_milliseconds (int start_index, 
+    float milliseconds, struct timeval* returnValue,
+    float* ap) {
   struct pkt_node* node = get_nth_packet (start_index);
   struct timeval ts_one, ts_two;
   struct timeval bufTv, diff;
   diff.tv_sec = 0;
   diff.tv_usec = milliseconds * 1000;
-
+  int payload = 0;
+  int data_packets = 0;
   ts_one = node->pn_pkt_hdr->ts;
   bufTv = ts_one;
   timeradd (&ts_one, &diff, &ts_two);
@@ -300,13 +356,17 @@ int filter_based_on_time_milliseconds (int start_index, float milliseconds, stru
   while (node != NULL) {
     ts_one = node->pn_pkt_hdr->ts;
     if ((ntohs (node->pn_tcp_hdr->th_sport)) != ACK_SOURCE_PORT) {
+      payload += node->pn_pkt_hdr->caplen;
+      payload -= sizeof (struct sniff_ethernet);
+      payload -= sizeof (struct sniff_ip);
+      payload -= sizeof (struct sniff_tcp);
       node = node->next;
       i++;
-      continue;
+      data_packets++;
+     continue;
     }
     struct timeval returnValue; 
     int k = timeval_subtract (&returnValue, &ts_one, &bufTv);
-    fprintf (stdout, "LL: %lld:%lld\n", returnValue.tv_sec, returnValue.tv_usec);
     if (!timercmp (&returnValue, &diff, >)) {
       node = node->next;
       i++;
@@ -315,8 +375,8 @@ int filter_based_on_time_milliseconds (int start_index, float milliseconds, stru
     break;
 
   }
+  *ap = payload / (float) data_packets;
   int k = timeval_subtract (returnValue, &ts_one, &bufTv);
-  fprintf (stdout, "RV:%lld:%lld\n", returnValue->tv_sec, returnValue->tv_usec);
   return i;
 
 }
@@ -386,35 +446,85 @@ int get_data_packets_till (int start_index, int n) {
   return 0;
 }
 
+float C = 0.0f;
+float W = 0.0f;
+int K = 0;
 
+// http://www.gnu.org/software/libc/manual/html_node/Example-of-Getopt.html#Example-of-Getopt
+int parse_arguments (int argc, char** argv) {
+  int aflag = 0;
+  int bflag = 0;
+  char *cvalue = NULL;
+  int c;
+
+  opterr = 0;
+  while ((c = getopt (argc, argv, "c:k:w:p:")) != -1)
+    switch (c)
+      {
+      case 'c':
+        C = atof (optarg);
+        break;
+      case 'k':
+        K = atoi (optarg);
+        break;
+      case 'w':
+        W = atof (optarg);
+        break;
+      case '?':
+        if (isprint (optopt))
+          fprintf (stderr, "Unknown option `-%c'.\n", optopt);
+        else
+          fprintf (stderr,
+                   "Unknown option character `\\x%x'.\n",
+                   optopt);
+        return 1;
+      default:
+        abort ();
+     }
+  if (C == 0.0)
+    return 1;
+  return 0;
+}
 
 int main (int argc, char** argv) {
+  pkt_list_head_ten_sec = NULL;
   if (construct_pkt_list ("NULL")) {
     fprintf (stderr, "Error creating packet list.\n");
   }
-  float window = 0.0f;
-  if (argc == 2) {
-    window = atof (argv[1]);
-  } else {
-    window = 180.0f;
-  }
+  int start_index_g = START_PACKET;
+  int big_window_size = 0;
 
-  
-  int start_index = 0;
+  if (parse_arguments (argc, argv)) {
+    exit (1);
+  } 
   int deltaG = 3;
-  float C = 12.0f;
-  for (start_index = 4200; start_index < 40400; start_index += 1) {
-    printf ("SI: %d\n", start_index);
-    if (start_index == 4231)
-      printf ("SI is 4231");
-    int packet_after_deltaG_seconds = filter_based_on_time (start_index, deltaG);
+  int array_index_for_part_6 = 0;
+  for (array_index_for_part_6 = 0; array_index_for_part_6 < 10; array_index_for_part_6++) {
+//    int packet_after_5_seconds = filter_based_on_time (
+//        part_6_start_indices[array_index_for_part_6], 5);
+    printf ("ASI: %d\n", array_index_for_part_6);
+  int part_6_valid_count_index = 0;
+start_index_g =part_6_start_indices[array_index_for_part_6];
+
+  for (;part_6_valid_count_index < 9; 
+      part_6_valid_count_index++) {
+  int valid_counts_in_this_run = 0;
+  for (; start_index_g <= END_PACKET; start_index_g++) {
+
+    if (break_run)
+      breaka;
+
+    printf ("SI: %d\n", start_index_g);
+    if (start_index_g == 11002)
+      printf ("Break");
+    int packet_after_deltaG_seconds = filter_based_on_time (start_index_g, deltaG);
     printf ("%d\n", packet_after_deltaG_seconds);
-    struct pkt_node* node_one = get_nth_packet (start_index);
+    struct pkt_node* node_one = get_nth_packet (start_index_g);
     struct pkt_node* node_two = get_nth_packet (packet_after_deltaG_seconds);
     float G = 0.0f;
     if (node_two == NULL) {
       G = 100.0f;
-    }else {
+    } else {
       u_int TS1 = ntohl (node_one->pn_tcp_hdr->timestamp_value);
       u_int TS2 = ntohl (node_two->pn_tcp_hdr->timestamp_value);
 
@@ -426,37 +536,56 @@ int main (int argc, char** argv) {
 
     struct timeval actual_window;
     // [1]
-    int k = filter_based_on_time_milliseconds(start_index, window, &actual_window);
+    float average_payload = 0.0f;
+    int k = filter_based_on_time_milliseconds(start_index_g, W, &actual_window, &average_payload);
+    
+    if (average_payload == 0.0f) {
+      printf ("Average Payload received as 0.0.");
+      exit (1);
+    }
     if (k == 1) {
       printf ("K is one!");
     }
-    float t4_t0_ms = get_t4_minus_t0 (start_index, k); 
-    
+    float t4_t0_ms = get_t4_minus_t0 (start_index_g, k); 
+    printf ("ValueOfK: %d\n", k); 
     // one = [1]
-    int data_packets_till_one = get_data_packets_till (start_index,
+    int data_packets_till_one = get_data_packets_till (start_index_g,
         k);
     printf ("Data Packets after deltaG seconds: %d\n", data_packets_till_one);
     printf ("t4_minus_t0: %f\n", t4_t0_ms);
-    float Rsnd = (1514 * data_packets_till_one) / t4_t0_ms;
+    float Rsnd = (average_payload* data_packets_till_one) / t4_t0_ms;
     Rsnd = (((Rsnd) / 1024) / 1024) * 8000; // Converting to mbps
     printf ("Rsnd: %f Mbits/sec\n", Rsnd); 
 
     if (Rsnd > C){
-      struct pkt_node* node_one_p2 = get_nth_packet (start_index);
+      struct pkt_node* node_one_p2 = get_nth_packet (start_index_g);
       struct pkt_node* node_two_p2 = get_nth_packet (k);
       u_int TS1_p2 = ntohl (node_one_p2->pn_tcp_hdr->timestamp_value);
       u_int TS2_p2 = ntohl (node_two_p2->pn_tcp_hdr->timestamp_value);
 
  
-      float Rrcv = (1514 * data_packets_till_one) /
+      float Rrcv = (average_payload* data_packets_till_one)/ 
       (G * (TS2_p2 - TS1_p2));
       Rrcv = Rrcv * 0.000008;
       printf ("Rrcv: %f Mbits/sec\n", Rrcv);
       printf ("RsndRrcv %d %f %f\n", data_packets_till_one, Rsnd, Rrcv);
-      if (data_packets_till_one >= 10)
-        printf ("RRWDPCMT10 %d %f %f\n", data_packets_till_one, Rsnd, Rrcv);
+      if (data_packets_till_one >= K) {
+        printf ("RRWDPCMT10_%d_%d_%d %d %f %f\n", array_index_for_part_6, 
+            part_6_valid_count_index,
+            part_6_valid_count_choices[part_6_valid_count_index],
+            data_packets_till_one, Rsnd, Rrcv);
+        valid_counts_in_this_run++;
+      }
+      if (valid_counts_in_this_run == part_6_valid_count_choices[part_6_valid_count_index]) {
+        printf ("VCINTRE_%d_%d %d\n", array_index_for_part_6,
+            part_6_valid_count_index,valid_counts_in_this_run);
+        break_run = 1;
+      }
     }
     printf ("FIN\n\n");
+    plh = NULL;
+  }
+  }
   }
   return 0;
 }
