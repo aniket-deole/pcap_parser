@@ -90,33 +90,23 @@ struct sniff_tcp {
 char errbuf[PCAP_ERRBUF_SIZE];
 
 #define DATA_SOURCE_PORT 55002
-#define ACK_SOURCE_PORT 25059
-#define START_PACKET 20166
-#define END_PACKET 130000
+#define ACK_SOURCE_PORT 25059 
+#define START_PACKET 28415
+#define END_PACKET 129000
 #define PHONE_IP 66.87.137.204
 //int part_6_start_indices[10] = { 4223, 7387, 10081, 12761, 17263, 20656, 25665, 30134, 
 //  35267, 39977 };
-int part_6_start_indices[20] = {
-  20160, // 20
-  26278, // 25
-  32951, // 30
-  39149, // 35
-  45122, // 40
-  51212, // 45
-  57340, // 50
-  61537, // 55
-  65266, // 60
-  68888, // 65
-  73935, // 70
-  80068, // 75
-  85185, // 80
-  89741, // 85
-  94289, // 90
-  97378, // 95
-  101985,// 100
-  107248,// 105
-  112691,// 110
-  118168 // 115
+int part_6_start_indices[10] = {
+  28415, // 20
+  40527, // 30
+  52382, // 40
+  61252, // 50
+  68878, // 60
+  80553, // 70
+  89869, // 80
+  96574, // 90
+  107474,// 100
+  117848// 110
 };
 
 int part_6_valid_count_choices[9] = {
@@ -304,7 +294,7 @@ float get_t4_minus_t0 (int start_index, int end) {
 }
 
 int construct_pkt_list (char* filter) {
-  pcap_t* dump_file = pcap_open_offline ("/home/aniket/projects/networks/pcap_parser/part8/aws_part8_fourth.pcap", errbuf);
+  pcap_t* dump_file = pcap_open_offline ("/home/aniket/projects/networks/pcap_parser/part8/aws_morning_fourth_filtered.pcap", errbuf);
   if (dump_file == NULL) {
     return -1;
   }
@@ -535,7 +525,7 @@ int main (int argc, char** argv) {
   } 
   int deltaG = 3;
   int array_index_for_part_6 = 0;
-  for (array_index_for_part_6 = 0; array_index_for_part_6 < 20; array_index_for_part_6++) {
+  for (array_index_for_part_6 = 0; array_index_for_part_6 < 10; array_index_for_part_6++) {
     //    int packet_after_5_seconds = filter_based_on_time (
     //        part_6_start_indices[array_index_for_part_6], 5);
     printf ("ASI: %d\n", array_index_for_part_6);
